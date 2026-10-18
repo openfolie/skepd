@@ -8,8 +8,9 @@ const RuntimeSchema = z.object({
   max_delegation_depth: z.number().int().positive().default(4),
   lease_seconds: z.number().int().positive().default(120),
   heartbeat_seconds: z.number().int().positive().default(30),
+  worker_timeout_seconds: z.number().int().positive().default(1),
   max_attempts: z.number().int().positive().default(3),
-}).default({ max_concurrent_tasks: 3, max_tasks_per_goal: 40, max_delegation_depth: 4, lease_seconds: 120, heartbeat_seconds: 30, max_attempts: 3 });
+}).default({ max_concurrent_tasks: 3, max_tasks_per_goal: 40, max_delegation_depth: 4, lease_seconds: 120, heartbeat_seconds: 30, worker_timeout_seconds: 1, max_attempts: 3 }).refine((v) => v.heartbeat_seconds < v.lease_seconds, { message: "heartbeat_seconds must be less than lease_seconds", path: ["heartbeat_seconds"] });
 
 const LimitsSchema = z.object({
   max_goal_duration_seconds: z.number().int().positive().nullable().default(3600),

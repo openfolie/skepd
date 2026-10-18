@@ -1,6 +1,6 @@
 import type { Task, Artifact } from "../domain/schemas.js";
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -11,7 +11,7 @@ export interface VerificationResult {
 }
 
 export class VerificationService {
-  verify(task: Task, artifacts: Artifact[], ctx: { workspacePath?: string; testCommand?: string | null }): VerificationResult {
+  verify(task: Task, artifacts: Artifact[], ctx: { workspacePath?: string; testCommand?: string | null; testRunLogPath?: string }): VerificationResult {
     const checks: { check: string; passed: boolean; detail?: string }[] = [];
     // artifact existence & hash
     for (const c of task.acceptanceCriteria) {
@@ -36,13 +36,26 @@ export class VerificationService {
     }
     // test command
     if (ctx.testCommand) {
+      let stdout = "";
+      let stderr = "";
+      let status: number | null = 0;
+      let passed = true;
       try {
-        execSync(ctx.testCommand, { cwd: ctx.workspacePath, stdio: "pipe", timeout: 120000 });
-        checks.push({ check: "test_command", passed: true, detail: "exit 0" });
+        const out = execSync(ctx.testCommand, { cwd: ctx.workspacePath, stdio: "pipe", timeout: 120000, encoding: "utf8" }) as string;
+        stdout = out ?? "";
       } catch (e) {
-        const err = e as { status?: number; stdout?: Buffer; stderr?: Buffer };
-        checks.push({ check: "test_command", passed: false, detail: `exit ${err.status ?? "err"}` });
+        const err = e as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
+        passed = false;
+        status = err.status ?? 1;
+        stdout = typeof err.stdout === "string" ? err.stdout : err.stdout?.toString() ?? "";
+        stderr = typeof err.stderr === "string" ? err.stderr : err.stderr?.toString() ?? "";
       }
+      if (ctx.testRunLogPath) {
+        const bounded = (s: string) => s.slice(0, 4000);
+        const log = [`command: ${ctx.testCommand}`, `exit: ${passed ? 0 : status}`, "stdout:", bounded(stdout), "stderr:", bounded(stderr)].join("\n");
+        writeFileSync(ctx.testRunLogPath, log);
+      }
+      checks.push({ check: "test_command", passed, detail: passed ? "exit 0" : `exit ${status}` });
     }
     const passed = checks.every((c) => c.passed);
     return { passed, reason: passed ? "all checks passed" : "one or more checks failed", evidence: checks };

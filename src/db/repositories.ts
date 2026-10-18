@@ -88,16 +88,15 @@ export class TaskRepo {
       "sessionId","resultSummary","failureReason","idempotencyKey","sideEffectClass","executionDeadline","resourceBudgetUsd","maxAttempts"];
     for (const f of fields) {
       if (patch[f] !== undefined) {
-        const col = f.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
-        sets[col] = patch[f];
+        sets[f] = patch[f];
       }
     }
-    if (patch.acceptanceCriteria !== undefined) sets.acceptance_criteria = j(patch.acceptanceCriteria);
-    if (patch.requiredCapabilities !== undefined) sets.required_capabilities = j(patch.requiredCapabilities);
+    if (patch.acceptanceCriteria !== undefined) sets.acceptanceCriteria = j(patch.acceptanceCriteria);
+    if (patch.requiredCapabilities !== undefined) sets.requiredCapabilities = j(patch.requiredCapabilities);
     if (patch.dependencies !== undefined) sets.dependencies = j(patch.dependencies);
     if (patch.evidence !== undefined) sets.evidence = j(patch.evidence);
     if (patch.metadata !== undefined) sets.metadata = j(patch.metadata);
-    if (patch.verificationVerdict !== undefined) sets.verification_verdict = patch.verificationVerdict ? j(patch.verificationVerdict) : null;
+    if (patch.verificationVerdict !== undefined) sets.verificationVerdict = patch.verificationVerdict ? j(patch.verificationVerdict) : null;
     this.db.update(tasks).set(sets).where(eq(tasks.id, id)).run();
   }
   claimAtomic(taskId: string, runtimeInstanceId: string, leaseExpiresAt: string): boolean {

@@ -28,4 +28,6 @@ export interface WorkerContext {
   workspacePath: string;
   artifactsDir: string;
   tools: Record<string, (...args: unknown[]) => Promise<unknown>>;
+  repoPath?: string;
+  baseCommit?: string;
 }

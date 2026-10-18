@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { TaskStatus, GoalStatus } from "../domain/enums.js";
 import type { Task, Goal, Artifact } from "../domain/schemas.js";
@@ -6,7 +7,7 @@ import { openDb, runMigrations } from "../db/client.js";
 import { GoalRepo, TaskRepo, EventRepo, ArtifactRepo } from "../db/repositories.js";
 import type { WorkerRunner, WorkerResult, WorkerContext } from "../workers/worker.js";
 import { VerificationService } from "../verification/verification.js";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -45,7 +46,10 @@ export class SchedulerService {
 
   constructor(deps: SchedulerDeps) {
     this.config = deps.config;
-    this.artifactsRoot = deps.artifactsRoot;
+    if (this.config.runtime.heartbeat_seconds >= this.config.runtime.lease_seconds) {
+      throw new Error("heartbeat_seconds must be less than lease_seconds");
+    }
+    this.artifactsRoot = deps.artifactsRoot.startsWith("/") ? deps.artifactsRoot : join(process.cwd(), deps.artifactsRoot);
     const { raw, db } = openDb(deps.dbPath);
     this.raw = raw;
     this.db = db;
@@ -61,6 +65,40 @@ export class SchedulerService {
   revokeStaleLeases(): void {
     this.raw.prepare("UPDATE tasks SET status='ready', lease_owner=NULL, lease_expires_at=NULL WHERE lease_owner IS NOT NULL AND lease_owner != ? AND status='executing'")
       .run(this.runtimeInstanceId);
+  }
+  workerTimeoutMs(): number {
+    const raw = this.config.runtime.worker_timeout_seconds;
+    return Math.max(100, (raw ?? 1) * 1000);
+  }
+  baseCommit(repoPath: string): string {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  }
+  isGitRepo(repoPath: string): boolean {
+    try { execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: repoPath, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); return true; } catch { return false; }
+  }
+  prepareWorkspace(task: Task, goal: Goal): string {
+    const ws = join(this.artifactsRoot, "..", "workspaces", goal.id, task.id);
+    if (goal.repoPath && this.isGitRepo(goal.repoPath)) {
+      const base = this.baseCommit(goal.repoPath);
+      try { execFileSync("git", ["worktree", "remove", "--force", ws], { cwd: goal.repoPath, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ignore */ }
+      rmSync(ws, { recursive: true, force: true });
+      execFileSync("git", ["worktree", "add", "--detach", ws, base], { cwd: goal.repoPath, stdio: ["ignore", "pipe", "pipe"] });
+      return ws;
+    }
+    mkdirSync(ws, { recursive: true });
+    return ws;
+  }
+  prepareVerificationWorkspace(task: Task, goal: Goal, patchPath?: string): string {
+    if (!goal.repoPath || !this.isGitRepo(goal.repoPath)) return join(this.artifactsRoot, "..", "workspaces", goal.id, task.id);
+    const ws = join(this.artifactsRoot, "..", "workspaces", goal.id, `${task.id}-verify`);
+    const base = this.baseCommit(goal.repoPath);
+    try { execFileSync("git", ["worktree", "remove", "--force", ws], { cwd: goal.repoPath, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ignore */ }
+    rmSync(ws, { recursive: true, force: true });
+    execFileSync("git", ["worktree", "add", "--detach", ws, base], { cwd: goal.repoPath, stdio: ["ignore", "pipe", "pipe"] });
+    if (patchPath && existsSync(patchPath)) {
+      execFileSync("git", ["apply", patchPath], { cwd: ws, stdio: ["ignore", "pipe", "pipe"] });
+    }
+    return ws;
   }
 
   registerWorker(w: WorkerRunner): void { this.workers.set(w.type, w); }
@@ -169,9 +207,12 @@ export class SchedulerService {
   }
 
   async runGoal(goalId: string): Promise<void> {
+    const initialGoal = this.goals.get(goalId);
+    if (!initialGoal) throw new Error("goal not found");
     const concurrency = this.config.runtime.max_concurrent_tasks;
     while (true) {
-      const goal = this.goals.get(goalId)!;
+      const goal = this.goals.get(goalId);
+      if (!goal) throw new Error("goal not found");
       if (goal.status !== "active") break;
       // promote
       this.promoteReady(goalId);
@@ -227,14 +268,21 @@ export class SchedulerService {
       this.logEvent(task.goalId, "task.failed", task.id, { reason: "no worker" });
       return;
     }
-    const wsPath = join(this.artifactsRoot, "..", "workspaces", task.id);
+    const wsPath = this.prepareWorkspace(task, goal);
     const artDir = join(this.artifactsRoot, task.goalId, task.id);
-    mkdirSync(wsPath, { recursive: true });
     mkdirSync(artDir, { recursive: true });
     this.tasks.update(task.id, { status: TaskStatus.EXECUTING, workspaceRef: wsPath });
-    const ctx: WorkerContext = { workspacePath: wsPath, artifactsDir: artDir, tools: {} };
+    const ctx: WorkerContext = { workspacePath: wsPath, artifactsDir: artDir, tools: {}, repoPath: goal.repoPath ?? undefined, baseCommit: goal.repoPath ? this.baseCommit(goal.repoPath) : undefined };
     try {
-      const result = await worker.execute(task, ctx);
+      const timeoutMs = this.workerTimeoutMs();
+      let timer: NodeJS.Timeout | undefined;
+      const result = await Promise.race([
+        worker.execute(task, ctx),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`worker timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
       // fencing: attempt must match
       const current = this.tasks.get(task.id)!;
       if (result.attempt !== current.attempt || current.leaseOwner !== this.runtimeInstanceId) {
@@ -259,22 +307,30 @@ export class SchedulerService {
       }
       this.tasks.update(task.id, { status: TaskStatus.VERIFYING, resultSummary: result.summary, evidence: result.evidence });
       this.logEvent(task.goalId, "task.verifying", task.id);
-      // verify
+      // verify once, using goal-level test command
       const arts = this.artifacts.listByTask(task.id);
-      const vres = this.verifier.verify(task, arts, { workspacePath: wsPath, testCommand: null });
-      // Note: testCommand handling at goal level; for demo use goal.testCommand if artifact verification needs. We'll pass goal.testCommand for test_pass? VerificationService uses ctx.testCommand. Set it:
-      // re-run with test command
-      const vres2 = this.verifier.verify(task, arts, { workspacePath: wsPath, testCommand: goal.testCommand });
-      this.tasks.update(task.id, { verificationVerdict: vres2 });
-      if (vres2.passed) {
+      const patchArtifact = arts.find((a) => a.path === "patch.diff" || a.path.endsWith("patch.diff"));
+      const patchPath = patchArtifact ? join(artDir, patchArtifact.path) : undefined;
+      const verifyWs = this.prepareVerificationWorkspace(task, goal, patchPath);
+      const testLogPath = join(artDir, "test-run.log");
+      const runTests = Boolean(goal.testCommand) && (task.workerType === "coding" || task.acceptanceCriteria.some((c) => c.type === "test_pass"));
+      const vres = this.verifier.verify(task, arts, { workspacePath: verifyWs, testCommand: runTests ? goal.testCommand : null, testRunLogPath: testLogPath });
+      // register test-run.log if produced
+      if (existsSync(testLogPath)) {
+        const buf = readFileSync(testLogPath);
+        const hash = createHash("sha256").update(buf).digest("hex");
+        try { this.artifacts.create({ id: `${task.id}-test-run.log`, goalId: task.goalId, taskId: task.id, path: "test-run.log", sha256: hash, sizeBytes: buf.length, mediaType: "text/plain", consumedArtifacts: [], createdAt: new Date().toISOString() }); } catch { /* duplicate */ }
+      }
+      this.tasks.update(task.id, { verificationVerdict: vres });
+      if (vres.passed) {
         this.tasks.update(task.id, { status: TaskStatus.SUCCEEDED });
         this.logEvent(task.goalId, "task.succeeded", task.id);
       } else {
         // retry or fail
         const t = this.tasks.get(task.id)!;
         if (t.attempt >= t.maxAttempts) {
-          this.tasks.update(task.id, { status: TaskStatus.FAILED, failureReason: vres2.reason });
-          this.logEvent(task.goalId, "task.failed", task.id, { reason: vres2.reason });
+          this.tasks.update(task.id, { status: TaskStatus.FAILED, failureReason: vres.reason });
+          this.logEvent(task.goalId, "task.failed", task.id, { reason: vres.reason });
         } else {
           const delay = Math.min(60000, 2000 * Math.pow(2, t.attempt - 1));
           const jitter = Math.random() * delay;
@@ -284,6 +340,7 @@ export class SchedulerService {
         }
       }
     } catch (e) {
+      try { await worker.cancel(task.id); } catch { /* ignore */ }
       const err = e as Error;
       const t = this.tasks.get(task.id)!;
       if (t.attempt >= t.maxAttempts) {

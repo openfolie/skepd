@@ -2,6 +2,8 @@ import { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { SchedulerService } from "../scheduler/scheduler.js";
 import { MockWorker } from "../workers/mock-worker.js";
+import { CodingWorker } from "../workers/coding-worker.js";
+import { FakePlanner } from "../planning/planner.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,6 +17,7 @@ function makeScheduler(configPath?: string): SchedulerService {
     artifactsRoot: cfg.storage.artifacts,
   });
   s.registerWorker(new MockWorker());
+  s.registerWorker(new CodingWorker());
   return s;
 }
 
@@ -32,6 +35,7 @@ export function buildCli(): Command {
     .option("--deadline <sec>", "", (v) => Number(v))
     .option("--config <path>")
     .option("--mock", "create a canned mock plan")
+    .option("--plan", "generate a plan with the fake planner")
     .action(async (spec, opts) => {
       const s = makeScheduler(opts.config);
       const g = s.createGoal(spec, { repoPath: opts.repo, testCommand: opts.testCmd, budgetUsd: opts.budget, deadlineSeconds: opts.deadline });
@@ -42,6 +46,12 @@ export function buildCli(): Command {
           workerType: "mock", sideEffectClass: "none",
         }]);
         console.log("mock plan accepted");
+      }
+      if (opts.plan) {
+        const planner = new FakePlanner();
+        const proposal = await planner.plan(g);
+        s.acceptPlan(g.id, 0, proposal.tasks);
+        console.log("plan accepted");
       }
     });
 
@@ -78,6 +88,8 @@ export function buildCli(): Command {
     .option("--config <path>")
     .action((goalId, opts) => {
       const s = makeScheduler(opts.config);
+      const g = s.goals.get(goalId);
+      if (!g) { console.log("not found"); return; }
       const evs = s.events.list(goalId, opts.tail);
       for (const e of evs) console.log(`${e.sequence} ${e.type} ${e.taskId ?? ""}`);
     });
