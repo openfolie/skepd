@@ -1,4 +1,7 @@
 import { eq, and, or, isNull, lt, asc, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { goals, tasks, events, artifacts, modelInvocations } from "./schema.js";
 import type { Db } from "./client.js";
 import type { Goal, Task, Event, Artifact, ModelInvocation } from "../domain/schemas.js";
@@ -149,6 +152,15 @@ export class ArtifactRepo {
       id: r.id, goalId: r.goalId, taskId: r.taskId, path: r.path, sha256: r.sha256,
       sizeBytes: r.sizeBytes, mediaType: r.mediaType, consumedArtifacts: pj(r.consumedArtifacts), createdAt: r.createdAt,
     }));
+  }
+  validateHash(artifact: Artifact, rootPath: string): boolean {
+    try {
+      const buf = readFileSync(join(rootPath, artifact.path));
+      const hash = createHash("sha256").update(buf).digest("hex");
+      return hash === artifact.sha256;
+    } catch {
+      return false;
+    }
   }
 }
 

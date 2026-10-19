@@ -46,7 +46,7 @@ src/
   observability/ # OTel setup (console exporter)
   cli/           # Command handlers (commander.js)
   index.ts       # Entry point
-migrations/      # Numbered SQL files
+  tests/        # Unit and integration tests
 tests/
   unit/
   integration/
@@ -74,7 +74,7 @@ docs/
 5. **Verification is independent.** Worker claims are never trusted. Verifier checks actual files, runs tests independently.
 6. **Atomic plan acceptance.** Validate entire DAG before persisting. No partial plans.
 7. **Conservative accounting.** Uncertain model calls retain reservations. Aborted calls are not free.
-8. **Trusted-user-only MVP.** Filesystem sandboxing is not a security boundary. No Docker isolation yet.
+8. **Trusted-user-only MVP.** Filesystem sandboxing is not a security boundary. No Docker isolation yet. Strands Box (containment + Dogwood policy) is a post-MVP isolation candidate when Linux support lands.
 
 ## State Machine (9 states)
 

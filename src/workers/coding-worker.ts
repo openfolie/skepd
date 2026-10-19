@@ -45,12 +45,21 @@ export class CodingWorker implements WorkerRunner {
       }
     }
     writeFileSync(join(ctx.artifactsDir, "patch.diff"), diff);
+    const testCandidate = join(ctx.workspacePath, "test", "math.test.js");
+    if (existsSync(testCandidate)) {
+      writeFileSync(join(ctx.artifactsDir, "regression-test.js"), readFileSync(testCandidate));
+    } else {
+      // fallback note
+      writeFileSync(join(ctx.artifactsDir, "regression-test.js"), "// no regression test found in worktree\n");
+    }
+
+    const names = ["patch.diff", "command-output.txt", "report.md", "regression-test.js"];
 
     // report.md
     const report = `# Task ${task.id}\n\n${task.description}\n\nPatch: patch.diff\n`;
     writeFileSync(join(ctx.artifactsDir, "report.md"), report);
 
-    const artifacts = ["patch.diff", "command-output.txt", "report.md"].map((name) => {
+    const artifacts = names.map((name) => {
       const buf = readFileSync(join(ctx.artifactsDir, name));
       const hash = createHash("sha256").update(buf).digest("hex");
       return { artifactId: `${task.id}-${name}`, path: name, sha256: hash };

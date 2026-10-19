@@ -17,7 +17,7 @@ export class FakePlanner implements Planner {
           {
             localKey: "inspect",
             description: "Inspect repository and reproduce the issue",
-            acceptanceCriteria: [{ id: "inspect", description: "inspection complete", type: "manual" }],
+            acceptanceCriteria: [{ id: "inspect", description: "inspection complete", type: "file_exists", target: "result.txt" }],
             workerType: "mock",
           },
           {

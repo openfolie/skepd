@@ -24,7 +24,7 @@ const WorkersSchema = z.object({
     enabled: z.boolean().default(true),
     containerized: z.boolean().default(false),
     network: z.boolean().default(false),
-  }).default({ enabled: true, containerized: false, network: false }),
+  }).default({ enabled: true, containerized: false, network: false }).refine((v) => !v.containerized, { message: "containerized isolation not implemented in MVP; set to false", path: ["containerized"] }),
 }).default({ strands: { enabled: true, containerized: false, network: false } });
 
 const ObsSchema = z.object({

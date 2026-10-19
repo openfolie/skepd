@@ -6,12 +6,19 @@ import { createHash } from "node:crypto";
 
 export class MockWorker implements WorkerRunner {
   type = "mock";
+  private pending = new Map<string, (reason?: unknown) => void>();
   async execute(task: Task, ctx: WorkerContext): Promise<WorkerResult> {
     const behavior = (task.metadata as Record<string, unknown>)?.mockBehavior as string | undefined;
     if (behavior === "fail") throw new Error("mock failure");
-    if (behavior === "timeout") {
-      const { promise } = Promise.withResolvers<void>();
-      return promise.then(() => { throw new Error("never"); }) as never;
+    if (behavior === "hang" || behavior === "timeout") {
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      this.pending.set(task.id, reject);
+      try {
+        await promise;
+      } finally {
+        this.pending.delete(task.id);
+      }
+      throw new Error("cancelled");
     }
     const dir = ctx.artifactsDir;
     mkdirSync(dir, { recursive: true });
@@ -26,6 +33,9 @@ export class MockWorker implements WorkerRunner {
       attempt: task.attempt,
     };
   }
-  async cancel(): Promise<void> {}
-  async health(): Promise<{ available: boolean; activeTasks: number }> { return { available: true, activeTasks: 0 }; }
+  async cancel(taskId: string): Promise<void> {
+    const reject = this.pending.get(taskId);
+    if (reject) reject(new Error("cancelled"));
+  }
+  async health(): Promise<{ available: boolean; activeTasks: number }> { return { available: true, activeTasks: this.pending.size }; }
 }

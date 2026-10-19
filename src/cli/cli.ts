@@ -4,6 +4,7 @@ import { SchedulerService } from "../scheduler/scheduler.js";
 import { MockWorker } from "../workers/mock-worker.js";
 import { CodingWorker } from "../workers/coding-worker.js";
 import { FakePlanner } from "../planning/planner.js";
+import { formatTimeline } from "../events/timeline.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -31,12 +32,12 @@ export function buildCli(): Command {
     .argument("<spec>")
     .option("--repo <path>")
     .option("--test-cmd <cmd>")
-    .option("--budget <usd>", "", (v) => Number(v))
-    .option("--deadline <sec>", "", (v) => Number(v))
+    .option("--budget <usd>", "", (v: string) => Number(v))
+    .option("--deadline <sec>", "", (v: string) => Number(v))
     .option("--config <path>")
     .option("--mock", "create a canned mock plan")
     .option("--plan", "generate a plan with the fake planner")
-    .action(async (spec, opts) => {
+    .action(async (spec: string, opts: any) => {
       const s = makeScheduler(opts.config);
       const g = s.createGoal(spec, { repoPath: opts.repo, testCommand: opts.testCmd, budgetUsd: opts.budget, deadlineSeconds: opts.deadline });
       console.log(`goal created: ${g.id}`);
@@ -58,7 +59,7 @@ export function buildCli(): Command {
   goal.command("run")
     .argument("<goalId>")
     .option("--config <path>")
-    .action(async (goalId, opts) => {
+    .action(async (goalId: string, opts: any) => {
       const s = makeScheduler(opts.config);
       await s.runGoal(goalId);
       const g = s.goals.get(goalId);
@@ -69,7 +70,7 @@ export function buildCli(): Command {
     .argument("<goalId>")
     .option("--config <path>")
     .option("--json")
-    .action((goalId, opts) => {
+    .action((goalId: string, opts: any) => {
       const s = makeScheduler(opts.config);
       const g = s.goals.get(goalId);
       if (!g) { console.log("not found"); return; }
@@ -84,29 +85,38 @@ export function buildCli(): Command {
 
   goal.command("events")
     .argument("<goalId>")
-    .option("--tail <n>", "", (v) => Number(v))
+    .option("--tail <n>", "", (v: string) => Number(v))
     .option("--config <path>")
-    .action((goalId, opts) => {
+    .option("--json")
+    .action((goalId: string, opts: any) => {
       const s = makeScheduler(opts.config);
       const g = s.goals.get(goalId);
       if (!g) { console.log("not found"); return; }
       const evs = s.events.list(goalId, opts.tail);
-      for (const e of evs) console.log(`${e.sequence} ${e.type} ${e.taskId ?? ""}`);
+      if (opts.json) {
+        console.log(JSON.stringify(evs, null, 2));
+        return;
+      }
+      const timelineEvents = evs.map((e: any) => ({
+        sequence: e.sequence, type: e.type, taskId: e.taskId, createdAt: e.createdAt,
+        payload: (e.payload ?? {}) as Record<string, unknown>,
+      }));
+      console.log(formatTimeline(timelineEvents, opts.tail));
     });
 
   goal.command("cancel")
     .argument("<goalId>")
     .option("--config <path>")
-    .action((goalId, opts) => {
+    .action(async (goalId: string, opts: any) => {
       const s = makeScheduler(opts.config);
-      s.cancelGoal(goalId);
+      await s.cancelGoal(goalId);
       console.log("cancelled");
     });
 
   goal.command("approve")
     .argument("<taskId>")
     .option("--config <path>")
-    .action((taskId, opts) => {
+    .action((taskId: string, opts: any) => {
       const s = makeScheduler(opts.config);
       s.approve(taskId);
       console.log("approved");
@@ -115,10 +125,21 @@ export function buildCli(): Command {
   goal.command("reject")
     .argument("<taskId>")
     .option("--config <path>")
-    .action((taskId, opts) => {
+    .action((taskId: string, opts: any) => {
       const s = makeScheduler(opts.config);
       s.reject(taskId);
       console.log("rejected");
+    });
+
+  goal.command("reconcile")
+    .argument("<invocationId>")
+    .requiredOption("--outcome <outcome>", "confirmed|not-applied|unresolved")
+    .option("--evidence <ref>")
+    .option("--config <path>")
+    .action((invocationId: string, opts: any) => {
+      const s = makeScheduler(opts.config);
+      s.reconcileInvocation(invocationId, opts.outcome, opts.evidence);
+      console.log(`reconciled ${invocationId}: ${opts.outcome}`);
     });
 
   return program;
